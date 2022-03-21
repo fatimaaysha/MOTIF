@@ -1,0 +1,446 @@
+---
+title: "dada2 Single-End Protocol - Combined Runs,  VMT samples"
+author: "Fatima Aysha Hussain; adapted from code by Seth Bloom"
+date: '`r format(Sys.Date(), "2021-05-14")`'
+output:
+  html_document: default
+  word_document: default
+---
+
+## References:  
+* Callahan, B. J., McMurdie, P. J., Rosen, M. J., Han, A. W., Johnson, A. J. A., & Holmes, S. P. (2016). DADA2: High-resolution sample inference from Illumina amplicon data. Nature Methods, 13(7), 581–3.  
+    + https://doi.org/10.1038/nmeth.3869  
+* McMurdie, P. J., & Holmes, S. (2013). phyloseq: an R package for reproducible interactive analysis and graphics of microbiome census data. PloS One, 8(4), e61217.  
+    + https://doi.org/10.1371/journal.pone.0061217  
+
+
+```{r clear-environment}
+#Clears environment to remove all variables, user-defined functions, etc.
+rm(list=ls()) 
+```
+
+```{r start-tracking-processing-time}
+#Define variable with start time of running script.
+start_time <- proc.time()
+```
+
+
+```{r define-sequencing-run-date-and-version}
+#Define sequencing run date in format YYYY_MM_DD
+print("Sequencing run date and version:")
+run.date <-  "2021_05_14_v4" #Enter character string here, for example: "2018_07_25_v1"
+run.date
+
+```
+
+
+```{r initiate-environment}
+# Load libraries
+library(ShortRead)
+packageVersion("ShortRead")
+library(dada2)
+packageVersion("dada2")
+library("phangorn")
+packageVersion("phangorn")
+library("phyloseq")
+packageVersion("phyloseq")
+library("ips")
+packageVersion("ips")
+library("tidyverse")
+packageVersion("tidyverse")
+
+# Set random seed for reproducibility purposes
+set.seed(100)
+
+```
+###Filter and trim reads
+
+```{r establish-directory-structure}
+#Define and print path to working directory
+pathwd <- "./VMT_analysis" 
+print("Working directory:")
+pathwd
+
+# Define path to subdirectory containing demultiplexed forward-read fastq files
+pathF <- file.path(pathwd, "Data") 
+print("Directory containing raw demultiplexed .fastq sequence files:")
+pathF
+
+#Define path to directory containing 16S databases
+print("Path to 16S databases:")
+pathdb <- file.path(pathwd, "DADA2_taxa_dbs")
+pathdb
+
+#Define path to directory containing mapping file
+print("Path to mapping file:")
+pathMap <- file.path(pathwd, "Mapping")
+pathMap
+
+
+#Create and define path to subdirectory in which filtered files will be stored
+filtpathF <- file.path(pathF, "filtered") 
+print("Directory that will contain filtered .fastq files:")
+filtpathF
+dir.create(filtpathF)
+
+#Create and define path to subdirectory in which to store output figures and tables
+print("Directory in which to store output figures and tables:")
+pathOut <- file.path(pathwd, "Output")
+pathOut
+dir.create(pathOut)
+
+#Create and define path to subdirectory in which RDS files will be stored
+print("Path to directory for saving RDS files:")
+pathF.RDS <- file.path(pathwd, "RDS")
+pathF.RDS
+dir.create(pathF.RDS)
+
+#Create and define path to subdirectory in which RDS files containing phyloseq objects will be stored
+print("Path to sub-directory in which to save phyloseq objects:")
+pathps0 <- file.path(pathwd, "ps_objects")
+pathps0
+dir.create(pathps0)
+```
+
+
+```{r Define-sequence-file-names-and-sample-names}
+# File parsing
+#Create vector of fastq files in pathF.directory
+#If analyzing paired end reads, the search pattern below would need to be modified (see DADA2 tutorial)
+print("Sequence files to be analyzed:")
+fnFs <- sort(list.files(pathF, pattern="fastq", full.names = TRUE))
+head(fnFs)
+
+#Extract sample names, assuming filenames have format: SAMPLENAME.fastq or SAMPLENAME.fastq.gz
+sample.names <- sapply(strsplit(basename(fnFs), ".fastq"), `[`, 1)
+head(sample.names)
+```
+
+
+```{r plot-unfiltered-run-quality}
+#Plot forward read quality aggregated across all forward read files
+#If analyzing paired end data, would need additional code for plotting reverse read quality
+p.qual.f.1.agg <- plotQualityProfile(fnFs, aggregate = TRUE) + 
+  ggtitle("Fwd read quality aggregated across samples")
+p.qual.f.1.agg
+
+#Save figure to file
+ggsave(filename = file.path(pathOut, paste0("Read_quality_aggregate_fwd_", run.date, ".pdf")), 
+       plot = p.qual.f.1.agg, device = "pdf", width = 8, height = 6, units = "in")
+
+```
+
+
+```{r calculate-quality-plot-processing-time}
+#Calculate cumulative processing time
+print("Cumulative processing time (seconds):")
+proc.time() - start_time
+```
+
+##Define positions at which to trim filtered data
+
+
+```{r define-trim-positions}
+FwdTrimLeft <-   10 #Need to insert a value here. Our typical default values is 10
+FwdTrimRight <-  230 #Need to insert a value here. Typical default value is 230.
+
+print(paste0("Trimming forward reads on left at base position ", FwdTrimLeft, 
+       " and on right at base position ", FwdTrimRight))
+```
+
+
+##Quality filter and trim
+```{r quality-filter-and-trim}
+#Create vector of modified names of fastq files after filtering in which the modified file name
+#changes from "samplename.fastq" to "samplename.filt.fastq"
+# filtFs <- str_replace(fnFs, "(.fastq)", ".filt\\1")
+filtFs <- file.path(filtpathF, str_replace(basename(fnFs), "(.fastq)", ".filt\\1"))
+head(filtFs)
+
+#Filter and trim sequences listed in fnFs and store them in filtFs, while storing summary in dataframe out
+out <- filterAndTrim(fwd = fnFs, filt = filtFs, rev = NULL, filt.rev = NULL,
+              trimLeft = FwdTrimLeft, truncLen = c(FwdTrimRight), maxEE = 2, truncQ = 11, maxN = 0, 
+              rm.phix = TRUE, compress = TRUE, verbose = TRUE, multithread = TRUE)
+head(out)
+#truncate file extension (".fastq" or ".fastq.gz") from rownames
+rownames(out) <- rownames(out) %>% str_replace(".fast.+", "")
+head(out)
+```
+
+```{r calculate-filter-trim-processing-time}
+#Calculate cumulative processing time
+print("Cumulative processing time (seconds):")
+proc.time() - start_time
+```
+
+
+##Sequence inference
+
+```{r sample-inference-1}
+## Set paramaters
+#Create character of all files in directory filtpathF.1 (i.e. all filtered files)
+#with names including string "fastq" (i.e. all *.fastq and *.fastq.gz files)
+filtFs.pass <- list.files(filtpathF, pattern="fastq", full.names = TRUE)
+head(filtFs.pass)
+
+#Create character vector of sample names from the file names in filtFs.1
+#This code assumes all filename = "samplename.filt.fastq"" or "samplename.filt.fastq.gz""
+sample.names.filt.pass <- sapply(strsplit(basename(filtFs.pass), ".filt.fast"), `[`, 1) 
+head(sample.names.filt.pass)
+
+#Name the elements in filtFs according to the elements in sample.names.filt
+names(filtFs.pass) <- sample.names.filt.pass
+
+#Samples for which no sequences passed the filtering step
+print("Samples for which no sequences passed filter criteria (i.e. samples excluded from filtered dataset):")
+sample.names.filt.fail <- setdiff(sample.names, sample.names.filt.pass)
+sample.names.filt.fail
+
+```
+
+
+```{r learn-errors}
+# Set random seed for reproducibility purposes
+set.seed(100)
+
+#Learn forward read error rates
+#errF <- learnErrors(filtFs.pass, nread=1e6, multithread=TRUE, randomize = "TRUE")
+errF <- learnErrors(filtFs.pass, nbases = 1e+09, multithread=TRUE, randomize = "TRUE")
+
+
+
+#Plot convergence of error rate computation
+plot(dada2:::checkConvergence(errF), type = "o", col = "firebrick3", main = "Convergence")
+
+#Plot calculated errors
+p.err.F <- plotErrors(errF, nominalQ = TRUE)
+p.err.F
+
+#Save figure to file
+ggsave(filename = file.path(pathOut, paste0("Error_rates_fwd_", run.date, ".pdf")),
+       plot = p.err.F, device = "pdf", width = 8, height = 6, units = "in")
+```
+
+```{r calculate-learn-error-processing-time}
+#Calculate cumulative processing time
+print("Cumulative processing time (seconds):")
+proc.time() - start_time
+```
+
+```{r dereplication-and-sample-inference}
+# Dereplicate and apply error rate to resolve sequence variants
+
+
+#Dereplicate the filtered forward sequences by sample
+derepFs <- derepFastq(filtFs.pass, verbose = FALSE)
+
+# Set random seed for reproducibility purposes
+set.seed(100)
+
+#Run dada on the dereplicated forward sequences to resolve sequence variants
+#based on the forward read error model calculated in errF
+dadaFs <- dada(derepFs, err = errF, multithread = TRUE)
+
+
+```
+  
+```{r calculate-sequence-inference-processing-time}
+#Calculate cumulative processing time
+print("Cumulative processing time (seconds):")
+proc.time() - start_time
+```
+  
+##Construct sequence table and remove chimeras
+
+```{r seqtab-chimera-removal-1}
+#Make sequence table and review dimensions
+seqtab.prechimeraremoval <- makeSequenceTable(dadaFs)
+print("Sequence table dimensions (samples, resolved sequences) before chimera removal:")
+dim(seqtab.prechimeraremoval)
+# Inspect distribution of sequence lengths
+print("Distribution of sequence lengths before chimera removal:")
+table(nchar(getSequences(seqtab.prechimeraremoval)))
+
+# Remove chimeras
+seqtab.nochim <- removeBimeraDenovo(seqtab.prechimeraremoval,
+                                    method = "consensus",
+                                    multithread = TRUE,
+                                    verbose = TRUE)
+
+print("Sequence table dimensions (samples, resolved sequences) after chimera removal:")
+dim(seqtab.nochim)
+# Inspect distribution of sequence lengths
+print("Distribution of sequence lengths after chimera removal:")
+table(nchar(getSequences(seqtab.nochim)))
+print("Proportion of reads eliminated by chimera removal:")
+sum(seqtab.nochim) / sum(seqtab.prechimeraremoval)
+```
+
+```{r save-RDS-and-image}
+#Save seqtab.nochim RDS file
+print("Save seqtab.nochim as RDS file named:")
+f.seqtab.nochim.RDS <- file.path(pathF.RDS, paste0("MiSeq_", run.date, "_preprocessing_single_nochim.RDS"))
+f.seqtab.nochim.RDS
+saveRDS(seqtab.nochim, f.seqtab.nochim.RDS)
+
+```
+
+
+```{r calculate-chimera-removal-processing-time}
+#Calculate cumulative processing time
+print("Cumulative processing time (seconds):")
+proc.time() - start_time
+```
+
+##Track reads through pipeline
+ 
+
+```{r track-reads}
+#Function to calculate reads for each element in dada output
+getN <- function(x) sum(getUniques(x))
+
+#Read count remaining at each step of processing. Would need additional columns if analyzing
+#paired-end data.
+
+#Create interim dataframes listing the sequence count after each step of processing per sample
+print("Read count remaining at each step of processing:")
+outdf <- out %>% 
+  as.data.frame() %>%
+  tibble::rownames_to_column() %>% 
+  dplyr::rename(Sample = "rowname", input = "reads.in", filtered = "reads.out")
+
+dadacountdf <- sapply(dadaFs, getN) %>% 
+  as.data.frame() %>% 
+  tibble::rownames_to_column() %>%
+  dplyr::rename(Sample = "rowname", denoisedF = ".")
+
+nonchimdf <- rowSums(seqtab.nochim) %>% 
+  as.data.frame() %>% 
+  tibble::rownames_to_column() %>%
+  dplyr::rename(Sample = "rowname", nonchim = ".")
+
+#Join dataframes by Sample column to track counts for each sample at each step of processing
+track <- dplyr::left_join(outdf, dadacountdf, by = c("Sample" = "Sample")) %>%
+  dplyr::left_join(nonchimdf, by = c("Sample" = "Sample"))
+head(track)
+
+#Percentage of original unfiltered reads remaining at each step of processing
+print("Percentage of original unfiltered foward reads remaining at each step of processing:")
+track.percent <- dplyr::mutate_at(track, vars(-matches("Sample")), funs(. * 100 / track[["input"]]))
+track.percent <- rename_at(track.percent, vars(-matches("Sample")), funs(paste0(., "_percent")))
+head(track.percent)
+
+#Create a "long" form version of track.percent for use with plotting
+track.percent.long <- track.percent %>% 
+  tidyr::gather(key = "Step", value = "Percent", -Sample) 
+
+#Modify track.percent.long so that Step column is a factor with levels in the correct order
+track.percent.long[["Step"]] <- track.percent.long[["Step"]] %>% forcats::fct_relevel(colnames(track.percent[-1]))
+
+#Plot percentages of input forward reads remaining after each step on a per sample basis.
+p.track <- ggplot(track.percent.long, aes(x = Step, y = Percent)) + 
+  geom_line(aes(group = Sample, colour = Sample)) +
+  geom_point() +
+  labs(title = "Percent of input forward reads remaining\nafter each processing step per sample",
+       subtitle = paste0("Fwd read left trim position: ", FwdTrimLeft, "\nFwd read right trim position: ", FwdTrimRight),
+       x = "Processing Step", y = "% of Input Reads Remaining") +
+  theme(plot.title = element_text(hjust = 0.5, size = 18), 
+        plot.subtitle = element_text(hjust = 0.5, size = 16),
+        legend.position = "none",
+        axis.text = element_text(size = 12), axis.title = element_text(size = 16))
+p.track
+
+#Save figure to file
+ggsave(filename = file.path(pathOut, paste0("read_track_fwd_L", FwdTrimLeft, "_R", FwdTrimRight, "_", run.date, ".pdf")), 
+       plot = p.track, device = "pdf", width = 8, height = 6, units = "in")
+
+#Merge track and track.percent dataframes
+track.merged <- dplyr::left_join(track, track.percent, by = c("Sample" = "Sample"))
+head(track.merged)
+
+#Save log file of tracking reads to file.
+print("Save track.merged dataframe tracking read counts as TSV file named:")
+f.track.merged <- file.path(pathOut, paste0("MiSeq_", run.date, "_fwd_read_tracking_log.txt"))
+head(f.track.merged)
+readr::write_tsv(track.merged, f.track.merged)
+
+```
+
+
+##Assign taxonomy
+
+```{r assign-taxonomy}
+
+
+# RDP
+#Record start time for this taxonomy assignment step
+tax_start_time = proc.time()
+print(paste0("RDP training database: ", "rdp_train_set_16.fa.gz"))
+taxa.rdp <- assignTaxonomy(seqtab.nochim, file.path(pathdb, "rdp_train_set_16.fa.gz"), multithread = TRUE) 
+
+#Add RDP species assignment
+print(paste0("RDP species assignment database: ", "rdp_species_assignment_16.fa.gz"))
+taxa.rdp.plus <- addSpecies(taxa.rdp, file.path(pathdb, "rdp_species_assignment_16.fa.gz"))
+writeLines("RDP taxonomy assignment step processing time (seconds):")
+proc.time() - tax_start_time
+
+
+```
+
+
+```{r calculate-taxonomy-assignment-processing-time}
+#Calculate cumulative processing time
+print("Cumulative processing time (seconds):")
+proc.time() - start_time
+```
+
+##Generate PhyloSeq Objects and final save
+
+```{r create-phyloseq}
+# Create PhyloSeq objects
+
+# Load mapping file for sequencing run
+print("Sequencing run mapping file:")
+f.mapping <- file.path(pathMap, list.files(path = pathMap, pattern = ".txt$"))
+f.mapping
+mapping <- readr::read_tsv(file = f.mapping, col_names = TRUE)
+
+#Remove any rows with "#SampleID" column value NA and convert to dataframe
+mapping <- mapping %>%
+  dplyr::filter(!is.na(`#SampleID`)) %>%
+  as.data.frame()
+
+#Convert mapping$#SampleID column to rownames
+mapping <- tibble::column_to_rownames(mapping, var = "#SampleID")
+
+
+# RDP
+#ps0.rdp <- phyloseq(otu_table(seqtab.1, taxa_are_rows = FALSE), tax_table(taxa.rdp.plus), phy_tree(tree))
+ps0.rdp <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows = FALSE), 
+                    tax_table(taxa.rdp.plus),
+                    sample_data(mapping))
+ps0.rdp
+
+
+
+# Sanity checks
+get_taxa_unique(ps0.rdp, "Phylum")
+
+
+# Save RDS files for downstream analysis
+
+saveRDS(ps0.rdp, file = file.path(pathps0, paste0("ps0.", run.date, ".rdp_v1.RDS")))
+
+
+#Save current R image (workspace) as .RData file
+print("Save R image (workspace) as .RData file named:")
+f.image <- file.path(pathF.RDS, paste0("MiSeq_", run.date, "_preprocessing_single.RData"))
+f.image
+save.image(f.image)
+```
+
+```{r calculate-final-processing-time}
+#Calculate total processing time
+print("Total processing time (seconds):")
+proc.time() - start_time
+```

@@ -1,0 +1,140 @@
+---
+title: "VMT_data_vis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r packages}
+library(dplyr)
+library("tidyr")
+library("phyloseq")
+library("vegan")
+library("BiodiversityR")
+library ("ggplot2")
+library("reshape")
+```
+
+
+```{r import phyloseq }
+data <- readRDS("./VMT_analysis/ps_objects/ps0.2021_05_14_v4.rdp_v1.RDS")
+
+ASV_table<-otu_table(data)
+metadata <- as.data.frame(sample_data(data))
+```
+
+```{r evaluate sample reads}
+mean_reads <- mean(rowSums(ASV_table))
+sample_reads <- as.data.frame(rowSums(ASV_table))
+colnames(sample_reads) <- c("total_reads")
+sample_reads$sampleID<-row.names(sample_reads)
+all.equal(row.names(sample_reads), row.names(metadata))
+sample_reads$Method <- metadata$Method
+sample_reads$Sample_type <- metadata$Sample_type
+
+p.read.value <- ggplot(data=sample_reads, aes(x=sampleID, y=total_reads)) + theme_bw() +geom_bar(stat="identity",position="dodge", width=0.8) + theme(axis.text.x=element_blank()) + geom_hline(yintercept=median(sample_reads$total_reads)) + scale_y_continuous(breaks=c(1000, 2000, 3000, 4000, 5000, 10000)) 
+
+plot(p.read.value)
+```
+
+```{r}
+##UPLOAD TAXONOMIC TABLE
+new_tax <- read.table("./ASV_Taxonomy_2021_FAH.txt", sep="\t", header=TRUE)
+row.names(new_tax)<-new_tax$ASV 
+new_tax$ASV<-NULL 
+#Extract taxonomy from phyloseq object
+tax<-as.data.frame(tax_table(data)) 
+tax_subset<-tax[!row.names(tax)%in%row.names(new_tax),,drop=FALSE] 
+#Add new_taxonomy
+colnames(new_tax)<-colnames(tax)
+tax_modified<-rbind(tax_subset, new_tax) 
+tax_modified<-tax_modified[!is.na(tax_modified$Kingdom),,drop=F]
+
+#Modified 17 May 2021 - group all other Lacto species together 
+for(i in 1:length(tax_modified$Species)){
+  if (is.na(tax_modified$Species[i])){
+  tax_modified$Species[i]<-"sp"
+  }
+}
+
+tax_modified2<-apply(tax_modified,2,function(x) as.character(x))
+#tax_modified2[is.na(tax_modified2$Species.x)]="sp"
+for (i in 1:dim(tax_modified2)[1]){
+  for (j in 1:length(tax_modified2[i,])){
+    if (is.na(tax_modified2[i,j])){
+      tax_modified2[i,j]<-as.character(tax_modified2[i,j])
+      tax_modified2[i,j]<-as.character(tax_modified2[i, j-1])
+    }
+  }
+}
+row.names(tax_modified2)<-row.names(tax_modified)
+
+#Update tax_table into phyloseq object
+tax_table(data)<-as.matrix(tax_modified2)
+
+```
+
+```{r tax glom and filtering}
+#1) TAX GLOM
+data_glom<-tax_glom(data, taxrank="Species")
+data_glom
+
+
+#2) FILTER
+otu_table(data_glom)<-t(otu_table(data_glom)) ##FLIPSSS
+filter_conditions <- filterfun_sample(function(x) x>=10)
+
+filtered<-genefilter_sample(otu_table(data_glom), filter_conditions, A=8)
+filtered<-genefilter_sample(otu_table(data_glom), filter_conditions, A=0.3*dim(otu_table(data_glom))[2])
+data_filtered<-prune_taxa(filtered, data_glom)
+data_filtered
+```
+
+```{r }
+#3) CALCULATE RELATIVE ABUNDANCE
+ASV_abundance<-transform_sample_counts(data_filtered, function(x) (x/sum(x)))
+
+#Take the TAX_table and OTU_table out from the phyloseq object
+TAX_table<-data.frame(tax_table(ASV_abundance))
+ASV_table<-as.data.frame(t(otu_table(ASV_abundance))) #REMEMBER TO TRANSPOSE (FLIPS IN FILTER STEP 1)
+all.equal(row.names(TAX_table), colnames(ASV_table))
+colnames(ASV_table)<-paste(TAX_table$Genus, TAX_table$Species)
+rowSums(ASV_table)
+
+#Add Metadata
+ASV_table_sorted <- as.data.frame(ASV_table[sort(row.names(ASV_table)),])
+metadata_sorted <- as.data.frame(metadata[sort(row.names(metadata)),])
+all.equal(row.names(ASV_table_sorted), row.names(metadata_sorted))
+ASV_table_sorted$Subject_ID <- metadata_sorted$Subject_ID
+ASV_table_sorted$Plate_num <- as.character(metadata_sorted$Plate_num)
+
+#Filter out low read samples
+ASV_table_sorted2 <- as.data.frame(ASV_table_sorted[!grepl("BLANK",ASV_table_sorted$Subject_ID),])
+ASV_table_sorted2 <- as.data.frame(ASV_table_sorted2[!grepl("130434D09",ASV_table_sorted2$Subject_ID),])
+
+```
+
+
+
+
+
+```{r composition graphs}
+ASV_table_sorted <- as.data.frame(ASV_table_sorted2)
+ASV_table_melt <- melt(ASV_table_sorted2)
+
+ggplot(data=ASV_table_melt, aes(fill=variable,x=Subject_ID, y=value)) + 
+  facet_wrap(~Plate_num, scales="free_x") + theme_bw() +
+  geom_bar(position = "stack",stat="identity") + scale_fill_manual(values=c("#FF9900", "#339933","#FFCC33", "#6666CC","#3399FF","#EE5485","#CC6666","#6699CC","#336666", "#A6611A","#BCB8D8")) + theme(strip.text.x = element_text(size = 8), axis.text.x = element_text(angle=90), axis.text.y = element_text(size = 5)) 
+ggsave("test.pdf", units="in", width=10, height=8, dpi=300)
+
+
+
+```
